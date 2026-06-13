@@ -1,0 +1,11 @@
+{
+  "name": "Plăți",
+  "short_name": "Plăți",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f4f0e6",
+  "theme_color": "#1c2b1f",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
