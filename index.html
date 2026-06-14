@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1c2b1f">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.svg">
+<title>Plăți</title>
+<style>
+  :root {
+    --paper: #f4f0e6;
+    --ink: #1c2b1f;
+    --ink-soft: #5a6b5d;
+    --line: #d8d2c2;
+    --accent: #b5562f;
+    --paid: #4f7a52;
+    --due: #b5562f;
+    --stamp: #8a9a8d;
+    --font-display: 'Courier New', monospace;
+    --font-body: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    padding-bottom: 90px;
+    min-height: 100vh;
+    background-image:
+      repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(28,43,31,0.03) 32px);
+  }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--paper);
+    border-bottom: 2px solid var(--ink);
+    padding: 16px 20px 12px;
+    padding-top: calc(16px + env(safe-area-inset-top));
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  header h1 {
+    font-family: var(--font-display);
+    font-size: 22px;
+    letter-spacing: 2px;
+    margin: 0;
+    text-transform: uppercase;
+  }
+
+  header .sync-status {
+    font-size: 11px;
+    color: var(--ink-soft);
+    font-family: var(--font-display);
+    text-align: right;
+  }
+
+  .sync-status.error { color: var(--accent); }
+  .sync-status.syncing { color: var(--paid); }
+
+  main {
+    padding: 12px 16px;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .group {
+    margin-bottom: 22px;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.4);
+    position: relative;
+  }
+
+  .group-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--font-display);
+  }
+
+  .group-header .date {
+    font-size: 15px;
+    font-weight: bold;
+    letter-spacing: 1px;
+  }
+
+  .group-header .totals {
+    font-size: 13px;
+    text-align: right;
+  }
+
+  .group-header .totals .remaining {
+    color: #f0c79a;
+    font-weight: bold;
+  }
+
+  .group-header.settled {
+    background: var(--paid);
+  }
+
+  .bill {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    position: relative;
+  }
+
+  .bill:last-child { border-bottom: none; }
+
+  .bill.paid {
+    opacity: 0.45;
+  }
+
+  .bill.paid .furnizor {
+    text-decoration: line-through;
+  }
+
+  .checkbox {
+    width: 26px;
+    height: 26px;
+    border: 2px solid var(--ink);
+    border-radius: 4px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    background: transparent;
+    color: var(--paid);
+  }
+
+  .checkbox.checked {
+    background: var(--paid);
+    border-color: var(--paid);
+    color: var(--paper);
+  }
+
+  .bill-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .bill-info .furnizor {
+    font-weight: 600;
+    font-size: 15px;
+    margin-bottom: 2px;
+  }
+
+  .bill-info .scadenta {
+    font-size: 12px;
+    color: var(--ink-soft);
+    font-family: var(--font-display);
+  }
+
+  .bill-info .scadenta.overdue {
+    color: var(--due);
+    font-weight: bold;
+  }
+
+  .suma {
+    font-family: var(--font-display);
+    font-size: 17px;
+    font-weight: bold;
+    white-space: nowrap;
+  }
+
+  .bill-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .icon-btn {
+    width: 30px;
+    height: 30px;
+    border: none;
+    background: transparent;
+    color: var(--ink-soft);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+  }
+
+  .icon-btn:active { background: var(--line); }
+
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--ink-soft);
+  }
+
+  .empty-state .stamp {
+    font-family: var(--font-display);
+    font-size: 13px;
+    letter-spacing: 3px;
+    border: 2px solid var(--stamp);
+    color: var(--stamp);
+    display: inline-block;
+    padding: 8px 16px;
+    transform: rotate(-4deg);
+    border-radius: 4px;
+    margin-bottom: 16px;
+  }
+
+  /* Header add button */
+  .header-add-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--ink);
+    color: var(--paper);
+    border: none;
+    font-size: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .header-add-btn:active { transform: scale(0.95); }
+
+  /* Bottom nav */
+  nav.tabs {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    background: var(--paper);
+    border-top: 2px solid var(--ink);
+    z-index: 15;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  nav.tabs button {
+    flex: 1;
+    border: none;
+    background: transparent;
+    padding: 12px 0 10px;
+    font-family: var(--font-display);
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  nav.tabs button .icon { font-size: 18px; }
+
+  nav.tabs button.active { color: var(--ink); font-weight: bold; }
+  nav.tabs button.active .icon { color: var(--accent); }
+
+  /* Modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(28,43,31,0.4);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    z-index: 30;
+  }
+
+  .modal {
+    background: var(--paper);
+    width: 100%;
+    max-width: 600px;
+    border-top: 2px solid var(--ink);
+    padding: 20px;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+
+  .modal h2 {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 0 0 16px;
+    font-size: 18px;
+  }
+
+  .field {
+    margin-bottom: 14px;
+  }
+
+  .field label {
+    display: block;
+    font-size: 12px;
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--ink-soft);
+    margin-bottom: 4px;
+  }
+
+  .field input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--ink);
+    background: rgba(255,255,255,0.6);
+    font-size: 16px;
+    border-radius: 4px;
+    color: var(--ink);
+    font-family: var(--font-body);
+  }
+
+  .field input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+  }
+
+  .btn {
+    flex: 1;
+    padding: 14px;
+    border: 2px solid var(--ink);
+    background: transparent;
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 13px;
+    font-weight: bold;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--ink);
+  }
+
+  .btn.primary {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .btn.danger {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .btn:active { transform: scale(0.98); }
+
+  /* Settings page */
+  .settings-section {
+    background: rgba(255,255,255,0.4);
+    border: 1px solid var(--line);
+    padding: 18px;
+    margin-bottom: 16px;
+    border-radius: 4px;
+  }
+
+  .settings-section h3 {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 13px;
+    margin: 0 0 12px;
+    color: var(--ink-soft);
+  }
+
+  .settings-section p {
+    font-size: 13px;
+    color: var(--ink-soft);
+    line-height: 1.5;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-display);
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    background: rgba(79,122,82,0.15);
+    color: var(--paid);
+    margin-bottom: 10px;
+  }
+
+  .badge.signed-out {
+    background: rgba(181,86,47,0.12);
+    color: var(--accent);
+  }
+
+  /* Summary page */
+  .summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px;
+    border: 1px solid var(--line);
+    margin-bottom: 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.4);
+  }
+
+  .summary-row.settled {
+    background: rgba(79,122,82,0.08);
+    border-color: rgba(79,122,82,0.3);
+  }
+
+  .summary-row .date {
+    font-family: var(--font-display);
+    font-weight: bold;
+    font-size: 15px;
+  }
+
+  .summary-row .count {
+    font-size: 12px;
+    color: var(--ink-soft);
+  }
+
+  .summary-row .amounts {
+    text-align: right;
+  }
+
+  .summary-row .total {
+    font-family: var(--font-display);
+    font-size: 17px;
+    font-weight: bold;
+  }
+
+  .summary-row .remaining {
+    font-size: 12px;
+    color: var(--accent);
+    font-family: var(--font-display);
+  }
+
+  .hidden { display: none !important; }
+
+  /* Overdue badge */
+  .overdue-badge {
+    display: inline-block;
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--paper);
+    background: var(--due);
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  /* Pull to refresh */
+  .pull-indicator {
+    text-align: center;
+    font-family: var(--font-display);
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    padding: 8px 0 0;
+    height: 0;
+    overflow: hidden;
+    transition: height 0.15s ease;
+  }
+
+  .pull-indicator.visible {
+    height: 28px;
+  }
+
+  /* History page */
+  .history-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    margin-bottom: 6px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.4);
+  }
+
+  .history-row .furnizor {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 2px;
+  }
+
+  .history-row .dates {
+    font-size: 11px;
+    color: var(--ink-soft);
+    font-family: var(--font-display);
+  }
+
+  .history-row .suma {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: bold;
+    color: var(--paid);
+    white-space: nowrap;
+  }
+
+  .duplicate-row {
+    margin-top: 10px;
+  }
+
+  .btn.secondary {
+    border-color: var(--ink-soft);
+    color: var(--ink-soft);
+  }
+
+  .loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--paper);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    gap: 12px;
+  }
+
+  .loading-overlay .stamp-text {
+    font-family: var(--font-display);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--line);
+    border-top-color: var(--ink);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Plăți</h1>
+  <div style="display:flex; align-items:center; gap:12px;">
+    <div class="sync-status" id="syncStatus">—</div>
+    <button class="header-add-btn hidden" id="fabAdd">+</button>
+  </div>
+</header>
+
+<div class="pull-indicator" id="pullIndicator">↓ Trage pentru sincronizare</div>
+<main id="mainContent"></main>
+
+<button class="fab hidden" id="fabAdd">+</button>
+
+<nav class="tabs">
+  <button class="active" data-tab="bills"><span class="icon">▤</span>Plăți</button>
+  <button data-tab="summary"><span class="icon">Σ</span>Sumar</button>
+  <button data-tab="history"><span class="icon">◷</span>Istoric</button>
+  <button data-tab="settings"><span class="icon">⚙</span>Setări</button>
+</nav>
+
+<!-- Edit/Add Modal -->
+<div class="modal-overlay hidden" id="editModalOverlay">
+  <div class="modal">
+    <h2 id="modalTitle">Plată nouă</h2>
+    <div class="field">
+      <label>Furnizor</label>
+      <input type="text" id="inputFurnizor" placeholder="ex: DIGI">
+    </div>
+    <div class="field">
+      <label>Sumă (lei)</label>
+      <input type="number" id="inputSuma" placeholder="0" inputmode="decimal">
+    </div>
+    <div class="field">
+      <label>Scadență</label>
+      <input type="date" id="inputScadenta">
+    </div>
+    <div class="field">
+      <label>Data plății (1 sau 15)</label>
+      <input type="date" id="inputDataPlatii">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="btnCancel">Anulează</button>
+      <button class="btn primary" id="btnSave">Salvează</button>
+    </div>
+    <div class="modal-actions" id="deleteRow" style="display:none;">
+      <button class="btn danger" id="btnDelete">Șterge plata</button>
+    </div>
+    <div class="modal-actions duplicate-row" id="duplicateRow" style="display:none;">
+      <button class="btn secondary" id="btnDuplicate">Duplică pentru luna viitoare</button>
+    </div>
+  </div>
+</div>
+
+<div class="loading-overlay hidden" id="loadingOverlay">
+  <div class="spinner"></div>
+  <div class="stamp-text">Se sincronizează…</div>
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
