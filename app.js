@@ -8,6 +8,8 @@ let accessToken = null;
 let tokenClient = null;
 let currentTab = "bills";
 let editingBill = null;  // bill object being edited, or null for "new"
+let syncStatusText = "—";
+let syncStatusKind = "";
 
 const STORAGE_KEY = "platiTrackerBills";
 const TOKEN_KEY = "platiTrackerToken";
@@ -52,8 +54,12 @@ function isSameDay(a, b) {
          a.getDate() === b.getDate();
 }
 
+function addMonths(date, n) {
+  return new Date(date.getFullYear(), date.getMonth() + n, date.getDate());
+}
+
 function addOneMonth(date) {
-  return new Date(date.getFullYear(), date.getMonth() + 1, date.getDate());
+  return addMonths(date, 1);
 }
 
 function formatLei(n) {
@@ -126,7 +132,7 @@ function initAuth() {
       const expiresAt = Date.now() + (response.expires_in * 1000);
       sessionStorage.setItem(TOKEN_KEY, accessToken);
       sessionStorage.setItem(TOKEN_EXP_KEY, String(expiresAt));
-      renderSettings();
+      renderConnectBar();
       refreshFromSheet();
     }
   });
@@ -140,7 +146,8 @@ function signOut() {
   accessToken = null;
   sessionStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(TOKEN_EXP_KEY);
-  renderSettings();
+  renderConnectBar();
+  renderCurrentTab();
 }
 
 function isSignedIn() {
@@ -185,19 +192,23 @@ async function fetchBillsFromSheet() {
 }
 
 async function appendBillToSheet(bill) {
+  return appendBillsToSheet([bill]);
+}
+
+async function appendBillsToSheet(billsArray) {
   const range = `${CONFIG.SHEET_NAME}!A:E`;
   const url = `${SHEETS_BASE}/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
-  const row = [
+  const rows = billsArray.map(bill => [
     bill.furnizor,
     String(Math.round(bill.suma)),
     formatSheetDate(bill.scadenta),
     formatSheetDate(bill.dataPlatii),
     bill.platit ? "TRUE" : "FALSE"
-  ];
+  ]);
   const res = await fetch(url, {
     method: "POST",
     headers: sheetsHeaders(),
-    body: JSON.stringify({ values: [row] })
+    body: JSON.stringify({ values: rows })
   });
   if (!res.ok) throw new Error(`Append failed: ${res.status} ${await res.text()}`);
   return res.json();
@@ -297,9 +308,9 @@ async function fetchHistoryFromSheet() {
 // ============================================
 
 function setSyncStatus(text, kind) {
-  const el = document.getElementById("syncStatus");
-  el.textContent = text;
-  el.className = "sync-status" + (kind ? " " + kind : "");
+  syncStatusText = text;
+  syncStatusKind = kind || "";
+  renderConnectBar();
 }
 
 async function refreshFromSheet() {
@@ -323,7 +334,7 @@ async function refreshFromSheet() {
       accessToken = null;
       sessionStorage.removeItem(TOKEN_KEY);
       sessionStorage.removeItem(TOKEN_EXP_KEY);
-      renderSettings();
+      renderConnectBar();
     }
   }
 }
@@ -336,6 +347,23 @@ async function addBill(bill) {
   showLoading(true);
   try {
     await appendBillToSheet(bill);
+    await refreshFromSheet();
+  } catch (e) {
+    console.error(e);
+    setSyncStatus("Eroare la adăugare", "error");
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function addRecurringBills(billsArray) {
+  bills.push(...billsArray);
+  saveToCache();
+  renderCurrentTab();
+  if (!isSignedIn()) return;
+  showLoading(true);
+  try {
+    await appendBillsToSheet(billsArray);
     await refreshFromSheet();
   } catch (e) {
     console.error(e);
@@ -358,6 +386,40 @@ async function updateBill(oldBill, newBill) {
   } catch (e) {
     console.error(e);
     setSyncStatus("Eroare la salvare", "error");
+  } finally {
+    showLoading(false);
+  }
+}
+
+// Applies a new amount to all future, unpaid bills sharing the same furnizor —
+// used when editing a recurring payment ("aplică la toate plățile viitoare").
+async function applyAmountToFutureSeries(furnizor, newSuma, excludeBill) {
+  const candidates = bills.filter(b =>
+    b !== excludeBill &&
+    b.furnizor === furnizor &&
+    !b.platit &&
+    b.dataPlatii > excludeBill.dataPlatii
+  );
+  if (candidates.length === 0) return;
+  showLoading(true);
+  try {
+    for (const b of candidates) {
+      const updated = { ...b, suma: newSuma };
+      if (isSignedIn()) {
+        await updateBillInSheet(b, updated);
+      }
+      const idx = bills.indexOf(b);
+      if (idx !== -1) bills[idx] = updated;
+    }
+    saveToCache();
+    if (isSignedIn()) {
+      await refreshFromSheet();
+    } else {
+      renderCurrentTab();
+    }
+  } catch (e) {
+    console.error(e);
+    setSyncStatus("Eroare la actualizarea seriei", "error");
   } finally {
     showLoading(false);
   }
@@ -414,15 +476,14 @@ function groupByPayDate() {
 // RENDERING
 // ============================================
 
+// Blue/green palette for alternating pay-date groups
 const GROUP_COLORS = [
-  "#D1E9FF", "#FFF9C4", "#E1BEE7", "#FFCCBC", "#D1FFD1", "#FFD1DC", "#B2EBF2", "#FFE082", "#CFD8DC", "#F8BBD0"
+  "#2F80ED", "#1F9E5B", "#3E96D6", "#2FAE7A", "#1E6FBF", "#38B58C"
 ];
 
 function renderCurrentTab() {
   if (currentTab === "bills") renderBills();
-  else if (currentTab === "summary") renderSummary();
-  else if (currentTab === "history") renderHistory();
-  else renderSettings();
+  else renderHistory();
 }
 
 function renderBills() {
@@ -451,8 +512,8 @@ function renderBills() {
       const overdue = startOfDay(bill.scadenta) < today;
       const billIndex = bills.indexOf(bill);
       return `
-        <div class="bill" style="background:${color}33" data-index="${billIndex}">
-          <div class="checkbox" data-action="toggle" data-index="${billIndex}"></div>
+        <div class="bill" data-index="${billIndex}">
+          <div class="checkbox" data-action="toggle" data-index="${billIndex}" style="border-color:${color}"></div>
           <div class="bill-info" data-action="edit" data-index="${billIndex}">
             <div class="furnizor">${escapeHtml(bill.furnizor)}</div>
             <div class="scadenta ${overdue ? "overdue" : ""}">Scadență: ${formatSheetDate(bill.scadenta)}${overdue ? '<span class="overdue-badge">scadent</span>' : ""}</div>
@@ -463,11 +524,9 @@ function renderBills() {
 
     return `
       <div class="group">
-        <div class="group-header">
+        <div class="group-header" style="background:${color}">
           <div class="date">${formatSheetDate(group.date)}</div>
-          <div class="totals">
-            <div>${formatLei(group.unpaidTotal)}</div>
-          </div>
+          <div class="totals">${formatLei(group.unpaidTotal)}</div>
         </div>
         ${billsHtml}
       </div>`;
@@ -508,7 +567,7 @@ function renderHistory() {
     main.innerHTML = `
       <div class="empty-state">
         <div class="stamp">Neconectat</div>
-        <p>Conectează-te cu Google din tab-ul "Setări" pentru a vedea istoricul.</p>
+        <p>Conectează-te cu Google pentru a vedea istoricul.</p>
       </div>`;
     return;
   }
@@ -542,77 +601,32 @@ function renderHistory() {
     </div>`).join("");
 }
 
-function renderSummary() {
-  const main = document.getElementById("mainContent");
-  document.getElementById("fabAdd").classList.add("hidden");
-
-  const groups = groupByPayDate();
-
-  if (groups.length === 0) {
-    main.innerHTML = `
-      <div class="empty-state">
-        <div class="stamp">Fără date</div>
-        <p>Adaugă plăți în tab-ul "Plăți".</p>
-      </div>`;
-    return;
-  }
-
-  main.innerHTML = groups.map(group => {
-    const settled = group.unpaidTotal === 0;
-    return `
-      <div class="summary-row ${settled ? "settled" : ""}">
-        <div>
-          <div class="date">${formatSheetDate(group.date)}</div>
-          <div class="count">${group.bills.length} plăți</div>
-        </div>
-        <div class="amounts">
-          <div class="total">${formatLei(group.total)}</div>
-          ${!settled ? `<div class="remaining">rest: ${formatLei(group.unpaidTotal)}</div>` : ""}
-        </div>
-      </div>`;
-  }).join("");
-}
-
-function renderSettings() {
-  const main = document.getElementById("mainContent");
-  document.getElementById("fabAdd").classList.add("hidden");
-
-  main.innerHTML = `
-    <div class="settings-section">
-      <h3>Google Sheets</h3>
-      ${isSignedIn()
-        ? `<div class="badge">✓ Conectat</div>
-           <div class="modal-actions" style="margin-top:0;">
-             <button class="btn" id="btnSyncNow">Sincronizează acum</button>
-             <button class="btn danger" id="btnSignOut">Deconectează</button>
-           </div>`
-        : `<div class="badge signed-out">○ Neconectat</div>
-           <p>Conectează-te cu contul Google care deține acest spreadsheet pentru a sincroniza plățile.</p>
-           <div class="modal-actions">
-             <button class="btn primary" id="btnSignIn">Conectează-te cu Google</button>
-           </div>`
-      }
-    </div>
-    <div class="settings-section">
-      <h3>Despre</h3>
-      <p>Spreadsheet: ${CONFIG.SPREADSHEET_ID}<br>Tab: ${CONFIG.SHEET_NAME}</p>
-      <p>Bifarea unei plăți o marchează ca plătită. Scriptul tău din Google Sheets o va muta automat în "ISTORIC" — la următoarea sincronizare va dispărea din această listă, exact ca în foaia de calcul.</p>
-    </div>`;
-
-  const signInBtn = document.getElementById("btnSignIn");
-  if (signInBtn) signInBtn.addEventListener("click", signIn);
-
-  const signOutBtn = document.getElementById("btnSignOut");
-  if (signOutBtn) signOutBtn.addEventListener("click", signOut);
-
-  const syncBtn = document.getElementById("btnSyncNow");
-  if (syncBtn) syncBtn.addEventListener("click", refreshFromSheet);
-}
-
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
+}
+
+// ============================================
+// CONNECT BAR (sign in / sync / sign out — lives on the main page)
+// ============================================
+
+function renderConnectBar() {
+  const bar = document.getElementById("connectBar");
+  if (!bar) return;
+  if (!isSignedIn()) {
+    bar.innerHTML = `<button class="btn-connect" id="btnConnectMain">Conectează-te cu Google</button>`;
+    document.getElementById("btnConnectMain").addEventListener("click", signIn);
+  } else {
+    bar.innerHTML = `
+      <div class="connect-status">
+        <span class="status-text ${syncStatusKind}">${syncStatusText}</span>
+        <button class="link-btn" id="btnSyncNow2" title="Sincronizează">↻</button>
+        <button class="link-btn danger text" id="btnSignOut2">Deconectare</button>
+      </div>`;
+    document.getElementById("btnSyncNow2").addEventListener("click", refreshFromSheet);
+    document.getElementById("btnSignOut2").addEventListener("click", signOut);
+  }
 }
 
 // ============================================
@@ -628,6 +642,10 @@ function openEditModal(bill) {
   document.getElementById("inputDataPlatii").value = dateToInputValue(bill ? bill.dataPlatii : nextPayDate());
   document.getElementById("deleteRow").style.display = bill ? "flex" : "none";
   document.getElementById("duplicateRow").style.display = bill ? "flex" : "none";
+  document.getElementById("fieldRecurring").style.display = bill ? "none" : "block";
+  document.getElementById("inputRecurringMonths").value = "";
+  document.getElementById("fieldApplyFuture").style.display = bill ? "block" : "none";
+  document.getElementById("inputApplyFuture").checked = false;
   document.getElementById("editModalOverlay").classList.remove("hidden");
 }
 
@@ -645,6 +663,10 @@ function duplicateModal() {
   document.getElementById("inputDataPlatii").value = dateToInputValue(addOneMonth(base.dataPlatii));
   document.getElementById("deleteRow").style.display = "none";
   document.getElementById("duplicateRow").style.display = "none";
+  document.getElementById("fieldRecurring").style.display = "block";
+  document.getElementById("inputRecurringMonths").value = "";
+  document.getElementById("fieldApplyFuture").style.display = "none";
+  document.getElementById("inputApplyFuture").checked = false;
   document.getElementById("editModalOverlay").classList.remove("hidden");
 }
 
@@ -653,7 +675,7 @@ function closeEditModal() {
   editingBill = null;
 }
 
-function saveModal() {
+async function saveModal() {
   const furnizor = document.getElementById("inputFurnizor").value.trim();
   const suma = parseFloat(document.getElementById("inputSuma").value);
   const scadenta = inputValueToDate(document.getElementById("inputScadenta").value);
@@ -665,12 +687,33 @@ function saveModal() {
   }
 
   if (editingBill) {
-    const newBill = { ...editingBill, furnizor, suma, scadenta, dataPlatii };
-    updateBill(editingBill, newBill);
+    const oldBill = editingBill;
+    const newBill = { ...oldBill, furnizor, suma, scadenta, dataPlatii };
+    const applyFuture = document.getElementById("inputApplyFuture").checked;
+    closeEditModal();
+    await updateBill(oldBill, newBill);
+    if (applyFuture) {
+      await applyAmountToFutureSeries(oldBill.furnizor, suma, oldBill);
+    }
   } else {
-    addBill({ furnizor, suma, scadenta, dataPlatii, platit: false, rowIndex: null });
+    const months = parseInt(document.getElementById("inputRecurringMonths").value, 10);
+    closeEditModal();
+    if (months && months > 1) {
+      const billsArray = [];
+      for (let i = 0; i < months; i++) {
+        billsArray.push({
+          furnizor, suma,
+          scadenta: addMonths(scadenta, i),
+          dataPlatii: addMonths(dataPlatii, i),
+          platit: false,
+          rowIndex: null
+        });
+      }
+      await addRecurringBills(billsArray);
+    } else {
+      await addBill({ furnizor, suma, scadenta, dataPlatii, platit: false, rowIndex: null });
+    }
   }
-  closeEditModal();
 }
 
 function deleteModal() {
@@ -743,6 +786,7 @@ function switchTab(tab) {
 window.addEventListener("DOMContentLoaded", () => {
   loadFromCache();
   renderCurrentTab();
+  renderConnectBar();
 
   document.getElementById("fabAdd").addEventListener("click", () => openEditModal(null));
   document.getElementById("btnCancel").addEventListener("click", closeEditModal);
