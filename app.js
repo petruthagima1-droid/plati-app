@@ -5,6 +5,8 @@
 let bills = [];          // array of {furnizor, suma, scadenta (Date), dataPlatii (Date), platit, rowIndex}
 let history = [];        // array of {furnizor, suma, scadenta, dataPlatii} from ISTORIC
 let accessToken = null;
+let tokenExpiry = null;
+let refreshTimerId = null;
 let tokenClient = null;
 let currentTab = "bills";
 let editingBill = null;  // bill object being edited, or null for "new"
@@ -14,6 +16,7 @@ let syncStatusKind = "";
 const STORAGE_KEY = "platiTrackerBills";
 const TOKEN_KEY = "platiTrackerToken";
 const TOKEN_EXP_KEY = "platiTrackerTokenExp";
+const HAS_GRANTED_KEY = "platiTrackerHasGranted";
 
 // ============================================
 // DATE HELPERS  (sheet format: dd.MM.yyyy)
@@ -112,12 +115,18 @@ function loadFromCache() {
 // AUTH  (Google Identity Services — token model)
 // ============================================
 
+function hasEverGranted() {
+  return localStorage.getItem(HAS_GRANTED_KEY) === "true";
+}
+
 function initAuth() {
-  // Restore token from sessionStorage if still valid
-  const savedToken = sessionStorage.getItem(TOKEN_KEY);
-  const savedExp = sessionStorage.getItem(TOKEN_EXP_KEY);
+  // Restore token from localStorage if still valid (persists across app closures,
+  // unlike sessionStorage which clears every time the app/tab is closed)
+  const savedToken = localStorage.getItem(TOKEN_KEY);
+  const savedExp = localStorage.getItem(TOKEN_EXP_KEY);
   if (savedToken && savedExp && Date.now() < Number(savedExp)) {
     accessToken = savedToken;
+    tokenExpiry = Number(savedExp);
   }
 
   tokenClient = google.accounts.oauth2.initTokenClient({
@@ -125,17 +134,45 @@ function initAuth() {
     scope: "https://www.googleapis.com/auth/spreadsheets",
     callback: (response) => {
       if (response.error) {
-        setSyncStatus("Eroare autentificare", "error");
+        if (!isSignedIn()) {
+          setSyncStatus("Neconectat", "error");
+        }
         return;
       }
       accessToken = response.access_token;
-      const expiresAt = Date.now() + (response.expires_in * 1000);
-      sessionStorage.setItem(TOKEN_KEY, accessToken);
-      sessionStorage.setItem(TOKEN_EXP_KEY, String(expiresAt));
+      tokenExpiry = Date.now() + (response.expires_in * 1000);
+      localStorage.setItem(TOKEN_KEY, accessToken);
+      localStorage.setItem(TOKEN_EXP_KEY, String(tokenExpiry));
+      localStorage.setItem(HAS_GRANTED_KEY, "true");
       renderConnectBar();
+      scheduleTokenRefresh();
       refreshFromSheet();
     }
   });
+
+  if (isSignedIn()) {
+    scheduleTokenRefresh();
+  } else if (hasEverGranted()) {
+    // Previously granted access — try to reconnect quietly, without waiting for a tap
+    signInSilently();
+  }
+}
+
+// Renews the access token a few minutes before it expires, in the background.
+function scheduleTokenRefresh() {
+  if (refreshTimerId) clearTimeout(refreshTimerId);
+  if (!tokenExpiry) return;
+  const bufferMs = 5 * 60 * 1000; // refresh 5 minutes early
+  const delay = Math.max(tokenExpiry - Date.now() - bufferMs, 0);
+  refreshTimerId = setTimeout(signInSilently, delay);
+}
+
+// Attempts to get a fresh token without showing any prompt/popup, relying on the
+// browser's existing Google session. May silently fail (e.g. Safari's tracking
+// prevention can block this) — in that case the person just needs to tap "Conectează-te".
+function signInSilently() {
+  if (!tokenClient) return;
+  tokenClient.requestAccessToken({ prompt: "" });
 }
 
 function signIn() {
@@ -144,14 +181,17 @@ function signIn() {
 
 function signOut() {
   accessToken = null;
-  sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(TOKEN_EXP_KEY);
+  tokenExpiry = null;
+  if (refreshTimerId) clearTimeout(refreshTimerId);
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKEN_EXP_KEY);
+  localStorage.removeItem(HAS_GRANTED_KEY);
   renderConnectBar();
   renderCurrentTab();
 }
 
 function isSignedIn() {
-  return !!accessToken;
+  return !!accessToken && !!tokenExpiry && Date.now() < tokenExpiry;
 }
 
 // ============================================
@@ -328,13 +368,21 @@ async function refreshFromSheet() {
     renderCurrentTab();
   } catch (e) {
     console.error(e);
-    setSyncStatus("Eroare sincronizare", "error");
     if (String(e).includes("401")) {
-      // token expired
+      // token expired mid-use — clear it and try a silent reconnect before giving up
       accessToken = null;
-      sessionStorage.removeItem(TOKEN_KEY);
-      sessionStorage.removeItem(TOKEN_EXP_KEY);
+      tokenExpiry = null;
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(TOKEN_EXP_KEY);
       renderConnectBar();
+      if (hasEverGranted()) {
+        setSyncStatus("Se reconectează…", "syncing");
+        signInSilently();
+      } else {
+        setSyncStatus("Neconectat", "error");
+      }
+    } else {
+      setSyncStatus("Eroare sincronizare", "error");
     }
   }
 }
@@ -807,6 +855,8 @@ window.addEventListener("DOMContentLoaded", () => {
     initAuth();
     if (isSignedIn()) {
       refreshFromSheet();
+    } else if (hasEverGranted()) {
+      setSyncStatus("Se reconectează…", "syncing");
     } else {
       setSyncStatus("Neconectat", "error");
     }
